@@ -6,43 +6,15 @@ import java.rmi.NotBoundException;
 import java.rmi.RMISecurityManager;
 import java.rmi.RemoteException;
 
-import javax.xml.ws.Endpoint;
-
 import utils.Domains;
 import utils.Logger;
 import utils.RemoteUtils;
-import wsRemoteFileServer.SoapRemoteFileServer;
 import contactServer.IContactServer;
 import exceptions.ServerAlreadyExistsException;
 
 public class RemoteFileServerUtils {
 
 	public static void keepAlive(IRmiRemoteFileServer fserver,
-			IContactServer contact, String serverName, String user, String url) {
-		while (true) {
-			RemoteUtils.sleepToRetry("checking contact server",
-					RemoteUtils.LONGRETRYTIME);
-			try {
-				if (contact != null) {
-					contact.alive();
-				} else {
-					Logger.log("Something has gone wrong with the contact server.");
-					contact = getContactServer(Domains.getContactServer());
-					registerFileServer(serverName, user, contact, url);
-					exportFileServerDomain(url, fserver);
-					RemoteUtils.sleepToRetry();
-				}
-			} catch (RemoteException e) {
-				Logger.log("Something has gone wrong with the contact server.");
-				contact = getContactServer(Domains.getContactServer());
-				registerFileServer(serverName, user, contact, url);
-				exportFileServerDomain(url, fserver);
-				RemoteUtils.sleepToRetry();
-			}
-		}
-	}
-
-	public static void keepAlive(SoapRemoteFileServer fserver,
 			IContactServer contact, String serverName, String user, String url) {
 		while (true) {
 			RemoteUtils.sleepToRetry("checking contact server",
@@ -142,12 +114,6 @@ public class RemoteFileServerUtils {
 			Logger.log(url);
 			System.exit(-1);
 		}
-	}
-
-	public static void exportFileServerDomain(String url,
-			SoapRemoteFileServer server) {
-		Logger.log(url);
-		Endpoint.publish(url, server);
 	}
 
 }

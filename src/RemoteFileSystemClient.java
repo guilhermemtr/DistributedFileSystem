@@ -1,5 +1,4 @@
 import java.net.MalformedURLException;
-import java.net.URL;
 import java.rmi.Naming;
 import java.rmi.NotBoundException;
 import java.rmi.RemoteException;
@@ -7,23 +6,14 @@ import java.util.Collection;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedList;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-
-import javax.xml.namespace.QName;
-import javax.xml.ws.WebServiceException;
 
 import rmiRemoteFileServer.IRmiRemoteFileServer;
 import utils.Domains;
 import utils.Logger;
 import utils.RemoteUtils;
-import wsClient.FileAlreadyExistsException_Exception;
-import wsClient.NoSuchFileException_Exception;
-import wsClient.NoSuchPathException_Exception;
-import wsClient.SoapRemoteFileServer;
-import wsClient.SoapRemoteFileServerService;
 import contactServer.IContactServer;
 import exceptions.FileAlreadyExistsException;
 import exceptions.NoPermissionsException;
@@ -128,26 +118,15 @@ public class RemoteFileSystemClient implements IRemoteFileSystemClient {
 			} catch (NoSuchServerException e) {
 				continue;
 			}
-			if (isSoapURL(serverURL)) {
-				try {
-					wsClient.SoapRemoteFileServer srv = getSoapFileServer(serverURL);
-					Logger.log(server + " is Soap server");
-					if (srv != null) {
-						srv.alive();
-						onlineServers.add(server);
-					}
-				} catch (WebServiceException e) {
+
+			try {
+				IRmiRemoteFileServer srv = getRmiFileServer(serverURL);
+				Logger.log(server + " is Rmi server");
+				if (srv != null) {
+					srv.alive();
+					onlineServers.add(server);
 				}
-			} else {
-				try {
-					IRmiRemoteFileServer srv = getRmiFileServer(serverURL);
-					Logger.log(server + " is Rmi server");
-					if (srv != null) {
-						srv.alive();
-						onlineServers.add(server);
-					}
-				} catch (RemoteException e) {
-				}
+			} catch (RemoteException e) {
 			}
 		}
 		String[] availableServers = new String[onlineServers.size()];
@@ -251,47 +230,20 @@ public class RemoteFileSystemClient implements IRemoteFileSystemClient {
 			Logger.log("No such server " + server);
 			return null;
 		}
-		if (isSoapURL(url)) {
-			SoapRemoteFileServer rfs = getSoapFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					List<String> out = rfs.ls(dir);
-					String[] ls = new String[out.size()];
-					int counter = 0;
-					for (String f : out) {
-						ls[counter++] = f;
-					}
-					return ls;
-				} catch (NoSuchPathException_Exception e) {
-					throw new NoSuchPathException(e.getLocalizedMessage());
-				} catch (WebServiceException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
+
+		IRmiRemoteFileServer rfs = getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				return rfs.ls(dir);
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
 				}
-			}
-		} else {
-			IRmiRemoteFileServer rfs = getRmiFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					return rfs.ls(dir);
-				} catch (RemoteException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
-				}
+				RemoteUtils.sleepToRetry();
 			}
 		}
 	}
@@ -313,49 +265,21 @@ public class RemoteFileSystemClient implements IRemoteFileSystemClient {
 			Logger.log("No such server " + server);
 			return false;
 		}
-		if (isSoapURL(url)) {
-			SoapRemoteFileServer rfs = getSoapFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					try {
-						rfs.mkDir(dir);
-					} catch (FileAlreadyExistsException_Exception e) {
-						throw new FileAlreadyExistsException(
-								e.getLocalizedMessage());
-					} catch (NoSuchPathException_Exception e) {
-						throw new NoSuchPathException(e.getLocalizedMessage());
-					}
-					return true;
-				} catch (WebServiceException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
-				}
-			}
 
-		} else {
-			IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					rfs.mkDir(dir);
-					return true;
-				} catch (RemoteException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
+		IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				rfs.mkDir(dir);
+				return true;
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
 				}
+				RemoteUtils.sleepToRetry();
 			}
 		}
 	}
@@ -379,46 +303,20 @@ public class RemoteFileSystemClient implements IRemoteFileSystemClient {
 			return false;
 		}
 
-		if (isSoapURL(url)) {
-			SoapRemoteFileServer rfs = getSoapFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					try {
-						rfs.rmDir(dir);
-					} catch (NoSuchPathException_Exception e) {
-						throw new NoSuchPathException(e.getLocalizedMessage());
-					}
-					return true;
-				} catch (WebServiceException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
+		IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				rfs.rmDir(dir);
+				return true;
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
 				}
-			}
-
-		} else {
-			IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					rfs.rmDir(dir);
-					return true;
-				} catch (RemoteException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
-				}
+				RemoteUtils.sleepToRetry();
 			}
 		}
 	}
@@ -440,46 +338,21 @@ public class RemoteFileSystemClient implements IRemoteFileSystemClient {
 			Logger.log("No such server " + server);
 			return false;
 		}
-		if (isSoapURL(url)) {
-			SoapRemoteFileServer rfs = getSoapFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					try {
-						rfs.rm(path);
-					} catch (NoSuchFileException_Exception e) {
-						throw new NoSuchFileException(e.getLocalizedMessage());
-					}
-					return true;
-				} catch (WebServiceException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
-				}
-			}
 
-		} else {
-			IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					rfs.rm(path);
-					return true;
-				} catch (RemoteException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
+		IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				rfs.rm(path);
+				return true;
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
 				}
+				RemoteUtils.sleepToRetry();
 			}
 		}
 	}
@@ -504,57 +377,24 @@ public class RemoteFileSystemClient implements IRemoteFileSystemClient {
 			Logger.log("No such server " + server);
 			return null;
 		}
-		if (isSoapURL(url)) {
-			SoapRemoteFileServer rfs = getSoapFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					try {
-						wsClient.FileInfo info = rfs.getAttr(path);
-						if (info != null) {
-							Date lastModified = info.getModified()
-									.toGregorianCalendar().getTime();
-							FileInfo ninfo = new FileInfo(info.getName(),
-									info.getLength(), lastModified,
-									info.isIsFile());
-							return ninfo;
-						} else
-							return null;
-					} catch (NoSuchFileException_Exception e) {
-						throw new NoSuchFileException(e.getLocalizedMessage());
-					}
-				} catch (WebServiceException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
-				}
-			}
 
-		} else {
-			IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
-			if (rfs == null)
-				throw new ServerOfflineException("File Server is offline");
-			int tries = RemoteUtils.NTRIES;
-			while (true) {
-				try {
-					FileInfo info = rfs.getAttr(path);
-					if (info != null) {
-						return info;
-					}
-					return null;
-				} catch (RemoteException e) {
-					tries--;
-					if (tries == 0) {
-						throw new ServerOfflineException(
-								"File Server is offline");
-					}
-					RemoteUtils.sleepToRetry();
+		IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				FileInfo info = rfs.getAttr(path);
+				if (info != null) {
+					return info;
 				}
+				return null;
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
+				}
+				RemoteUtils.sleepToRetry();
 			}
 		}
 	}
@@ -581,51 +421,24 @@ public class RemoteFileSystemClient implements IRemoteFileSystemClient {
 				Logger.log("No such server " + fromServer);
 				return false;
 			}
-			if (isSoapURL(url)) {
-				SoapRemoteFileServer fsFrom = getSoapFileServer(url);
-				if (fsFrom == null)
-					throw new ServerOfflineException("File Server is offline");
-				int tries = RemoteUtils.NTRIES;
-				while (true) {
-					try {
-						try {
-							file = fsFrom.getFile(fromPath);
-						} catch (NoSuchFileException_Exception e) {
-							throw new NoSuchFileException(
-									e.getLocalizedMessage());
-						}
 
-						break;
-					} catch (WebServiceException e) {
-						tries--;
-						if (tries == 0) {
-							throw new ServerOfflineException(
-									"File Server is offline");
-						}
-						RemoteUtils.sleepToRetry();
+			IRmiRemoteFileServer fsFrom = this.getRmiFileServer(url);
+			if (fsFrom == null)
+				throw new ServerOfflineException("File Server is offline");
+			int tries = RemoteUtils.NTRIES;
+			while (true) {
+				try {
+					file = fsFrom.getFile(fromPath);
+					break;
+				} catch (RemoteException e) {
+					tries--;
+					if (tries == 0) {
+						throw new ServerOfflineException(
+								"File Server is offline");
 					}
-				}
-				return false;
-			} else {
-				IRmiRemoteFileServer fsFrom = this.getRmiFileServer(url);
-				if (fsFrom == null)
-					throw new ServerOfflineException("File Server is offline");
-				int tries = RemoteUtils.NTRIES;
-				while (true) {
-					try {
-						file = fsFrom.getFile(fromPath);
-						break;
-					} catch (RemoteException e) {
-						tries--;
-						if (tries == 0) {
-							throw new ServerOfflineException(
-									"File Server is offline");
-						}
-						RemoteUtils.sleepToRetry();
-					}
+					RemoteUtils.sleepToRetry();
 				}
 			}
-
 		}
 
 		if (toServer == null) {
@@ -639,46 +452,22 @@ public class RemoteFileSystemClient implements IRemoteFileSystemClient {
 				Logger.log("No such server " + toServer);
 				return false;
 			}
-			if (isSoapURL(url)) {
-				SoapRemoteFileServer fsTo = getSoapFileServer(url);
-				if (fsTo == null)
-					throw new ServerOfflineException("File Server is offline");
-				int tries = RemoteUtils.NTRIES;
-				while (true) {
-					try {
-						try {
-							fsTo.putFile(toPath, file);
-						} catch (FileAlreadyExistsException_Exception e) {
-							throw new FileAlreadyExistsException(
-									e.getLocalizedMessage());
-						}
-						break;
-					} catch (WebServiceException e) {
-						tries--;
-						if (tries == 0) {
-							throw new ServerOfflineException(
-									"File Server is offline");
-						}
-						RemoteUtils.sleepToRetry();
+
+			IRmiRemoteFileServer fsTo = this.getRmiFileServer(url);
+			if (fsTo == null)
+				throw new ServerOfflineException("File Server is offline");
+			int tries = RemoteUtils.NTRIES;
+			while (true) {
+				try {
+					fsTo.putFile(toPath, file);
+					break;
+				} catch (RemoteException e) {
+					tries--;
+					if (tries == 0) {
+						throw new ServerOfflineException(
+								"File Server is offline");
 					}
-				}
-			} else {
-				IRmiRemoteFileServer fsTo = this.getRmiFileServer(url);
-				if (fsTo == null)
-					throw new ServerOfflineException("File Server is offline");
-				int tries = RemoteUtils.NTRIES;
-				while (true) {
-					try {
-						fsTo.putFile(toPath, file);
-						break;
-					} catch (RemoteException e) {
-						tries--;
-						if (tries == 0) {
-							throw new ServerOfflineException(
-									"File Server is offline");
-						}
-						RemoteUtils.sleepToRetry();
-					}
+					RemoteUtils.sleepToRetry();
 				}
 			}
 
@@ -701,22 +490,7 @@ public class RemoteFileSystemClient implements IRemoteFileSystemClient {
 			return null;
 		}
 	}
-
-	private SoapRemoteFileServer getSoapFileServer(String url) {
-		try {
-			SoapRemoteFileServerService service = new SoapRemoteFileServerService(
-					new URL(url), new QName("http://wsRemoteFileServer/",
-							"SoapRemoteFileServerService"));
-			return service.getSoapRemoteFileServerPort();
-		} catch (Exception e) {
-			return null;
-		}
-	}
-
-	private static boolean isSoapURL(String url) {
-		return url.contains("http://");
-	}
-
+	
 	private String getFileServerURL(String server)
 			throws ServerOfflineException, NoPermissionsException,
 			NoSuchServerException {

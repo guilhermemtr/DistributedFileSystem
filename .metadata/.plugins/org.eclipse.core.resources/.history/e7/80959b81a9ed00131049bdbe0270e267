@@ -1,0 +1,907 @@
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.rmi.Naming;
+import java.rmi.NotBoundException;
+import java.rmi.RemoteException;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+import javax.xml.namespace.QName;
+import javax.xml.ws.WebServiceException;
+
+import rmiRemoteFileServer.IRmiRemoteFileServer;
+import utils.Domains;
+import utils.Logger;
+import utils.RemoteUtils;
+import contactServer.IContactServer;
+import exceptions.FileAlreadyExistsException;
+import exceptions.NoPermissionsException;
+import exceptions.NoSuchFileException;
+import exceptions.NoSuchPathException;
+import exceptions.NoSuchServerException;
+import exceptions.ServerOfflineException;
+import fileUtils.FileInfo;
+import fileUtils.FileSystem;
+import fileUtils.IFileSystem;
+import fileUtils.SyncData;
+import fileUtils.SyncManager;
+import fileUtils.SyncUtils;
+
+public class RemoteFileSystemClient implements IRemoteFileSystemClient {
+
+	private String username;
+	private IContactServer contact;
+	private IFileSystem fileSystem;
+	private boolean fixedContactServer;
+	private String contactServer;
+
+	private static final String DEFAULTFILEPATH = "./";
+
+	public RemoteFileSystemClient(String username, String contactServer) {
+		this(username, contactServer, DEFAULTFILEPATH);
+	}
+
+	public RemoteFileSystemClient(String username, String contactServer,
+			String path) {
+		Logger.log("Username is " + username);
+		Logger.log("Path is " + path);
+		this.username = username;
+		this.contact = null;
+		fileSystem = new FileSystem(path);
+		this.contactServer = contactServer;
+		if (contactServer != null) {
+			fixedContactServer = true;
+		} else {
+			fixedContactServer = false;
+		}
+		updateContactServer();
+	}
+
+	public static IContactServer getContactServer(String contactServerURL)
+			throws ServerOfflineException, MalformedURLException,
+			NotBoundException {
+		IContactServer contact = null;
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				contact = (IContactServer) Naming.lookup(contactServerURL);
+				return contact;
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException(
+							"Contact server is offline");
+				}
+			}
+			return contact;
+		}
+	}
+
+	@Override
+	public String[] servers() throws ServerOfflineException {
+		Set<String> onlineServers = new HashSet<String>();
+		String[] srvs = null;
+		int tries = RemoteUtils.NTRIES;
+		while (tries > 0) {
+			try {
+				if (contact != null) {
+					srvs = contact.getServers(this.username);
+				} else {
+					Logger.log("No contact server.");
+					System.out.println("No contact server");
+				}
+				break;
+			} catch (RemoteException e) {
+				tries--;
+				this.updateContactServer();
+				if (tries == 0) {
+					throw new ServerOfflineException(
+							"Contact server is unreachable");
+				}
+				RemoteUtils.sleepToRetry();
+			}
+		}
+
+		if (srvs == null)
+			return null;
+		for (String server : srvs) {
+			String serverURL;
+			try {
+				serverURL = this.getFileServerURL(server);
+				Logger.log("The url of " + server + " is " + serverURL);
+			} catch (NoPermissionsException e1) {
+				// Only happens if at the middle of an operation the user's
+				// permissions are revoked.
+				Logger.log("No permissions to access server: " + server);
+				continue;
+			} catch (NoSuchServerException e) {
+				continue;
+			}
+
+			try {
+				IRmiRemoteFileServer srv = getRmiFileServer(serverURL);
+				Logger.log(server + " is Rmi server");
+				if (srv != null) {
+					srv.alive();
+					onlineServers.add(server);
+				}
+			} catch (RemoteException e) {
+			}
+		}
+		String[] availableServers = new String[onlineServers.size()];
+		int i = 0;
+		for (String srv : onlineServers) {
+			availableServers[i++] = srv;
+		}
+		return availableServers;
+	}
+
+	@Override
+	public boolean addPermission(String server, String user)
+			throws ServerOfflineException {
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				Logger.log("User adding permissions " + this.username);
+				Logger.log("User being granted " + user + " to server "
+						+ server);
+				if (this.contact != null) {
+					this.contact.addPermissions(this.username, user, server);
+					return true;
+				} else {
+					tries--;
+					this.updateContactServer();
+					if (tries == 0) {
+						throw new ServerOfflineException(
+								"File Server is offline");
+					}
+					RemoteUtils.sleepToRetry();
+				}
+
+			} catch (RemoteException e) {
+				tries--;
+				this.updateContactServer();
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
+				}
+				RemoteUtils.sleepToRetry();
+			} catch (NoPermissionsException e) {
+				Logger.log("No permissions for user " + this.username);
+				return false;
+			} catch (NoSuchServerException e) {
+				Logger.log("No such server " + server);
+				return false;
+			}
+		}
+	}
+
+	@Override
+	public boolean remPermission(String server, String user)
+			throws ServerOfflineException {
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				if (this.contact != null) {
+					contact.removePermissions(this.username, user, server);
+					return true;
+				} else {
+					tries--;
+					this.updateContactServer();
+					if (tries == 0) {
+						throw new ServerOfflineException(
+								"File Server is offline");
+					}
+					RemoteUtils.sleepToRetry();
+				}
+
+			} catch (RemoteException e) {
+				this.updateContactServer();
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
+				}
+				RemoteUtils.sleepToRetry();
+			} catch (NoPermissionsException e) {
+				Logger.log("No permissions to access server: \n"
+						+ e.getLocalizedMessage());
+				System.out.println(e.getLocalizedMessage());
+				return false;
+			} catch (NoSuchServerException e) {
+				Logger.log("No such server " + server);
+				return false;
+			}
+		}
+	}
+
+	@Override
+	public String[] dir(String server, String user, String path)
+			throws ServerOfflineException, NoPermissionsException,
+			NoSuchPathException {
+		String dir = Domains.parsePath(path);
+
+		if (server == null) {
+			return this.fileSystem.ls(dir);
+		}
+		String url;
+		try {
+			url = this.getFileServerURL(Domains.getFileServerURL(server, user));
+		} catch (NoSuchServerException e1) {
+			Logger.log("No such server " + server);
+			return null;
+		}
+
+		IRmiRemoteFileServer rfs = getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				return rfs.ls(dir);
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
+				}
+				RemoteUtils.sleepToRetry();
+			}
+		}
+	}
+
+	@Override
+	public boolean mkdir(String server, String user, String path)
+			throws ServerOfflineException, NoPermissionsException,
+			FileAlreadyExistsException, NoSuchPathException {
+		String dir = Domains.parsePath(path);
+
+		if (server == null) {
+			this.fileSystem.mkDir(dir);
+			return true;
+		}
+		String url;
+		try {
+			url = this.getFileServerURL(Domains.getFileServerURL(server, user));
+		} catch (NoSuchServerException e1) {
+			Logger.log("No such server " + server);
+			return false;
+		}
+
+		IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				rfs.mkDir(dir);
+				return true;
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
+				}
+				RemoteUtils.sleepToRetry();
+			}
+		}
+	}
+
+	@Override
+	public boolean rmdir(String server, String user, String path)
+			throws ServerOfflineException, NoPermissionsException,
+			NoSuchPathException {
+
+		String dir = Domains.parsePath(path);
+
+		if (server == null) {
+			this.fileSystem.rmDir(dir);
+			return true;
+		}
+		String url;
+		try {
+			url = this.getFileServerURL(Domains.getFileServerURL(server, user));
+		} catch (NoSuchServerException e1) {
+			Logger.log("No such server " + server);
+			return false;
+		}
+
+		IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				rfs.rmDir(dir);
+				return true;
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
+				}
+				RemoteUtils.sleepToRetry();
+			}
+		}
+	}
+
+	@Override
+	public boolean rm(String server, String user, String dir)
+			throws ServerOfflineException, NoPermissionsException,
+			NoSuchFileException {
+		String path = Domains.parsePath(dir);
+
+		if (server == null) {
+			this.fileSystem.rm(path);
+			return true;
+		}
+		String url;
+		try {
+			url = this.getFileServerURL(Domains.getFileServerURL(server, user));
+		} catch (NoSuchServerException e1) {
+			Logger.log("No such server " + server);
+			return false;
+		}
+
+		IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				rfs.rm(path);
+				return true;
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
+				}
+				RemoteUtils.sleepToRetry();
+			}
+		}
+	}
+
+	@Override
+	public FileInfo getAttr(String server, String user, String dir)
+			throws ServerOfflineException, NoPermissionsException,
+			NoSuchFileException, NoSuchPathException {
+		String path = Domains.parsePath(dir);
+
+		if (server == null) {
+			FileInfo fi = this.fileSystem.getAttr(path);
+			if (fi != null) {
+				return fi;
+			}
+			return null;
+		}
+		String url;
+		try {
+			url = this.getFileServerURL(Domains.getFileServerURL(server, user));
+		} catch (NoSuchServerException e1) {
+			Logger.log("No such server " + server);
+			return null;
+		}
+
+		IRmiRemoteFileServer rfs = this.getRmiFileServer(url);
+		if (rfs == null)
+			throw new ServerOfflineException("File Server is offline");
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				FileInfo info = rfs.getAttr(path);
+				if (info != null) {
+					return info;
+				}
+				return null;
+			} catch (RemoteException e) {
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("File Server is offline");
+				}
+				RemoteUtils.sleepToRetry();
+			}
+		}
+	}
+
+	@Override
+	public boolean cp(String fromServer, String fromUser, String fromDir,
+			String toServer, String toUser, String toDir)
+			throws ServerOfflineException, NoPermissionsException,
+			NoSuchFileException, FileAlreadyExistsException {
+
+		String fromPath = Domains.parsePath(fromDir);
+
+		String toPath = Domains.parsePath(toDir);
+
+		byte[] file = null;
+		if (fromServer == null) {
+			file = this.fileSystem.getFile(fromPath);
+		} else {
+			String url;
+			try {
+				url = this.getFileServerURL(Domains.getFileServerURL(
+						fromServer, fromUser));
+			} catch (NoSuchServerException e1) {
+				Logger.log("No such server " + fromServer);
+				return false;
+			}
+
+			IRmiRemoteFileServer fsFrom = this.getRmiFileServer(url);
+			if (fsFrom == null)
+				throw new ServerOfflineException("File Server is offline");
+			int tries = RemoteUtils.NTRIES;
+			while (true) {
+				try {
+					file = fsFrom.getFile(fromPath);
+					break;
+				} catch (RemoteException e) {
+					tries--;
+					if (tries == 0) {
+						throw new ServerOfflineException(
+								"File Server is offline");
+					}
+					RemoteUtils.sleepToRetry();
+				}
+			}
+		}
+
+		if (toServer == null) {
+			this.fileSystem.putFile(toPath, file);
+		} else {
+			String url;
+			try {
+				url = this.getFileServerURL(Domains.getFileServerURL(toServer,
+						toUser));
+			} catch (NoSuchServerException e1) {
+				Logger.log("No such server " + toServer);
+				return false;
+			}
+
+			IRmiRemoteFileServer fsTo = this.getRmiFileServer(url);
+			if (fsTo == null)
+				throw new ServerOfflineException("File Server is offline");
+			int tries = RemoteUtils.NTRIES;
+			while (true) {
+				try {
+					fsTo.putFile(toPath, file);
+					break;
+				} catch (RemoteException e) {
+					tries--;
+					if (tries == 0) {
+						throw new ServerOfflineException(
+								"File Server is offline");
+					}
+					RemoteUtils.sleepToRetry();
+				}
+			}
+
+		}
+		return true;
+	}
+
+	@Override
+	public void setupContactServer(IContactServer contact) {
+		if (contact == null)
+			throw new NullPointerException();
+		this.contact = contact;
+	}
+
+	private IRmiRemoteFileServer getRmiFileServer(String url) {
+		try {
+			return (IRmiRemoteFileServer) Naming.lookup(url);
+		} catch (MalformedURLException | RemoteException | NotBoundException e) {
+			Logger.log(url);
+			return null;
+		}
+	}
+
+	private SoapRemoteFileServer getSoapFileServer(String url) {
+		try {
+			SoapRemoteFileServerService service = new SoapRemoteFileServerService(
+					new URL(url), new QName("http://wsRemoteFileServer/",
+							"SoapRemoteFileServerService"));
+			return service.getSoapRemoteFileServerPort();
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	private static boolean isSoapURL(String url) {
+		return url.contains("http://");
+	}
+
+	private String getFileServerURL(String server)
+			throws ServerOfflineException, NoPermissionsException,
+			NoSuchServerException {
+		int tries = RemoteUtils.NTRIES;
+		while (true) {
+			try {
+				if (contact != null) {
+					String serverUrl = contact.getFileServer(this.username,
+							server);
+					if (serverUrl == null) {
+						throw new ServerOfflineException(
+								"Server does not exist");
+					}
+					return serverUrl;
+				} else {
+					// Updates the contact server, to a new one, if available.
+					this.updateContactServer();
+					tries--;
+					if (tries == 0) {
+						throw new ServerOfflineException("Server is offline");
+					}
+					RemoteUtils.sleepToRetry();
+				}
+			} catch (RemoteException e) {
+				// Updates the contact server, to a new one, if available.
+				this.updateContactServer();
+				tries--;
+				if (tries == 0) {
+					throw new ServerOfflineException("Server is offline");
+				}
+				RemoteUtils.sleepToRetry();
+			}
+		}
+	}
+
+	private SyncManager getSyncManager(String localPath) {
+		SyncManager sm = SyncUtils.loadSync(localPath);
+		if (sm == null) {
+			sm = new SyncManager();
+		}
+		return sm;
+	}
+
+	@Override
+	public void updateContactServer() {
+		String contactUrl = null;
+		if (fixedContactServer) {
+			contactUrl = this.contactServer;
+		} else {
+			contactUrl = Domains.getContactServer();
+		}
+		if (contactUrl == null)
+			return;
+		try {
+			this.contact = getContactServer(contactUrl);
+		} catch (MalformedURLException e) {
+			return;
+		} catch (ServerOfflineException e) {
+			return;
+		} catch (NotBoundException e) {
+			return;
+		}
+	}
+
+	@Override
+	public void sync(String localPath, String fileServer,
+			String fileServerOwner, String remotePath)
+			throws ServerOfflineException, NoPermissionsException,
+			NoSuchPathException {
+
+		// Criar as paths se não existirem
+		setupSyncPath(null, null, localPath);
+		setupSyncPath(fileServer, fileServerOwner, remotePath);
+
+		// Sets up the paths
+		localPath = Domains.getPath(localPath);
+		remotePath = Domains.getPath(remotePath);
+
+		// Gets the sync manager.
+		SyncManager sm = getSyncManager(localPath);
+		String syncId = Domains.getSyncFilename(localPath, fileServer,
+				fileServerOwner, remotePath);
+		SyncData sync = sm.getSyncData(syncId);
+		Date lastLocalSync = null;
+		Date lastRemoteSync = null;
+		if (sync != null) {
+			lastLocalSync = sync.getLocalSyncDate();
+			lastRemoteSync = sync.getServerSyncDate();
+		}
+
+		Logger.log("Getting last synced files");
+		Map<String, String> lastSynced = getSyncedFiles(sync);
+
+		Logger.log("Getting local files");
+
+		// Gets the current list of files in the local and remote directory.
+		Map<String, Date> localFiles = getFiles(null, null, localPath);
+
+		Logger.log("Getting remote files");
+		Map<String, Date> remoteFiles = getFiles(fileServer, fileServerOwner,
+				remotePath);
+
+		Logger.log("Getting local modified files.");
+		Map<String, Date> localModified = this.getModified(null, null,
+				localPath, localFiles, lastLocalSync, lastSynced);
+
+		Logger.log("Getting remote modified files.");
+		Map<String, Date> remoteModified = this.getModified(fileServer,
+				fileServerOwner, remotePath, remoteFiles, lastRemoteSync,
+				lastSynced);
+
+		Logger.log("Deleting unsynchronized local files.");
+		this.checkDeletedFiles(null, null, localPath, lastSynced, localFiles,
+				remoteFiles, localModified);
+
+		Logger.log("Deleting unsynchronized remote files.");
+		this.checkDeletedFiles(fileServer, fileServerOwner, remotePath,
+				lastSynced, remoteFiles, localFiles, remoteModified);
+
+		Collection<String> subDirectories = new LinkedList<String>();
+		subDirectories.addAll(this.getSubDirectories(fileServer,
+				fileServerOwner, remotePath, remoteModified));
+		subDirectories.addAll(this.getSubDirectories(null, null, localPath,
+				localModified));
+
+		for (String subDirectory : subDirectories) {
+			this.sync(localPath + subDirectory, fileServer, fileServerOwner,
+					remotePath + subDirectory);
+		}
+
+		Map<String, String> conflict = new ConcurrentHashMap<String, String>();
+		Map<String, String> toSync = new ConcurrentHashMap<String, String>();
+
+		this.getFilesToSync(null, null, localPath, localModified,
+				remoteModified, conflict, toSync);
+
+		this.getFilesToSync(fileServer, fileServerOwner, remotePath,
+				remoteModified, localModified, conflict, toSync);
+
+		for (String file : conflict.keySet()) {
+			try {
+				try {
+					this.rmRF(null, null, localPath + conflict.get(file));
+				} catch (ServerOfflineException | NoPermissionsException
+						| NoSuchFileException | NoSuchPathException e1) {
+
+				}
+				try {
+					this.cp(null, null, localPath + file, null, null, localPath
+							+ conflict.get(file));
+				} catch (ServerOfflineException | NoPermissionsException
+						| NoSuchFileException e1) {
+
+				}
+				try {
+					this.rmRF(null, null, localPath + file);
+				} catch (ServerOfflineException | NoPermissionsException
+						| NoSuchFileException | NoSuchPathException e1) {
+
+				}
+			} catch (FileAlreadyExistsException e) {
+				Logger.log(e.getLocalizedMessage());
+			}
+		}
+
+		for (String file : toSync.keySet()) {
+			if (remoteModified.containsKey(file)) {
+				try {
+					if (localFiles.containsKey(file)) {
+						try {
+							this.rmRF(null, null, localPath + file);
+						} catch (ServerOfflineException
+								| NoPermissionsException | NoSuchFileException
+								| NoSuchPathException e1) {
+						}
+					}
+					try {
+						this.cp(fileServer, fileServerOwner, remotePath + file,
+								null, null, localPath + file);
+					} catch (ServerOfflineException | NoPermissionsException
+							| NoSuchFileException e1) {
+
+					}
+
+				} catch (FileAlreadyExistsException e) {
+					Logger.log(e.getLocalizedMessage());
+				}
+			} else {
+				try {
+					if (remoteFiles.containsKey(file)) {
+						try {
+							this.rmRF(fileServer, fileServerOwner, remotePath
+									+ file);
+						} catch (ServerOfflineException
+								| NoPermissionsException | NoSuchFileException
+								| NoSuchPathException e1) {
+						}
+					}
+					try {
+						this.cp(null, null, localPath + file, fileServer,
+								fileServerOwner, remotePath + file);
+					} catch (ServerOfflineException | NoPermissionsException
+							| NoSuchFileException e1) {
+
+					}
+
+				} catch (FileAlreadyExistsException e) {
+					Logger.log(e.getLocalizedMessage());
+				}
+			}
+		}
+
+		Map<String, Date> syncedFiles = this.getFiles(null, null, localPath);
+
+		Date remoteDate = this.lastModified(fileServer, fileServerOwner,
+				remotePath);
+
+		Logger.log("Creating new sync data.");
+		sync = new SyncData(fileServer, remotePath, fileServerOwner,
+				syncedFiles.keySet(), remoteDate);
+
+		Logger.log("Saving the new sync data");
+		sm.sync(syncId, sync);
+
+		Logger.log("Saving sync data to file");
+		SyncUtils.saveSync(sm, localPath);
+	}
+
+	private void setupSyncPath(String server, String user, String path)
+			throws ServerOfflineException, NoPermissionsException,
+			NoSuchPathException {
+		try {
+			FileInfo finfo = this.getAttr(server, user, path);
+			if (finfo.isFile)
+				throw new NoSuchPathException(
+						"The chosen directory is a file...");
+		} catch (NoSuchFileException e) {
+			try {
+				this.mkdir(server, user, path);
+			} catch (FileAlreadyExistsException e1) {
+			}
+		}
+	}
+
+	void getFilesToSync(String server, String user, String path,
+			Map<String, Date> modified, Map<String, Date> otherModified,
+			Map<String, String> conflict, Map<String, String> toSync) {
+		for (String file : modified.keySet()) {
+			try {
+				FileInfo finfo = this.getAttr(server, user, path + file);
+				if (finfo.isFile) {
+					if (otherModified.containsKey(file)) {
+						conflict.put(file, file + Domains.LOCALSUFFIX);
+						Logger.log(file + " is in conflict");
+					}
+					Logger.log(file);
+					toSync.put(file, file);
+				}
+			} catch (ServerOfflineException | NoPermissionsException
+					| NoSuchFileException | NoSuchPathException e) {
+			}
+
+		}
+	}
+
+	Collection<String> getSubDirectories(String server, String user,
+			String path, Map<String, Date> modified) {
+		Collection<String> subDirectories = new LinkedList<String>();
+		for (String file : modified.keySet()) {
+			try {
+				FileInfo finfo = this.getAttr(server, user, path + file);
+				if (!finfo.isFile) {
+					Logger.log(file);
+					subDirectories.add(file);
+				}
+			} catch (ServerOfflineException | NoPermissionsException
+					| NoSuchFileException | NoSuchPathException e) {
+			}
+		}
+		return subDirectories;
+	}
+
+	void checkDeletedFiles(String server, String user, String path,
+			Map<String, String> lastSynced, Map<String, Date> localFiles,
+			Map<String, Date> remoteFiles, Map<String, Date> localModified) {
+
+		for (String file : lastSynced.keySet()) {
+
+			if (!remoteFiles.containsKey(file)) {
+				if (localFiles.containsKey(file)) {
+					if (!localModified.containsKey(file)) {
+						try {
+							Logger.log(path + file);
+
+							this.rmRF(server, user, path + file);
+							remoteFiles.remove(file);
+						} catch (ServerOfflineException
+								| NoPermissionsException | NoSuchFileException
+								| NoSuchPathException e) {
+						}
+					}
+				}
+			}
+
+		}
+
+	}
+
+	void rmRF(String server, String user, String file)
+			throws ServerOfflineException, NoPermissionsException,
+			NoSuchFileException, NoSuchPathException {
+
+		FileInfo finfo = this.getAttr(server, user, file);
+		Logger.log("Removing file " + finfo.name);
+		if (finfo.isFile) {
+			this.rm(server, user, file);
+		} else {
+			String[] childs = this.dir(server, user, file);
+			for (String child : childs) {
+				this.rmRF(server, user, file + "/" + child);
+			}
+			this.rmdir(server, user, file);
+		}
+	}
+
+	Map<String, Date> getModified(String server, String user, String path,
+			Map<String, Date> files, Date lastSync,
+			Map<String, String> lastSynced) {
+		Map<String, Date> modified = new ConcurrentHashMap<String, Date>();
+		if (lastSync != null) {
+			Logger.log("Last synchronization: " + lastSync.toString());
+		}
+		for (String file : files.keySet()) {
+			Date lastModified = files.get(file);
+			if (!lastSynced.containsKey(file) || lastSync == null
+					|| lastSync.compareTo(lastModified) < 0) {
+				Logger.log(file + " has been modified");
+				modified.put(file, lastModified);
+			}
+		}
+		return modified;
+	}
+
+	Map<String, String> getSyncedFiles(SyncData sync) {
+		Map<String, String> lastSynced = new ConcurrentHashMap<String, String>();
+		if (sync != null) {
+			for (String file : sync.getFiles()) {
+				Logger.log(file);
+				lastSynced.put(file, file);
+			}
+		}
+		return lastSynced;
+	}
+
+	Map<String, Date> getFiles(String fileServer, String fileServerOwner,
+			String path) throws ServerOfflineException, NoPermissionsException {
+		Map<String, Date> files = new ConcurrentHashMap<String, Date>();
+		String[] file_list;
+		try {
+			file_list = this.dir(fileServer, fileServerOwner, path);
+			for (String file : file_list) {
+				if (!Domains.isLocal(file)) {
+					Date lastModified = this.lastModified(fileServer,
+							fileServerOwner, path + file);
+					Logger.log(file + " last modified on "
+							+ lastModified.toString());
+					files.put(file, lastModified);
+				}
+			}
+		} catch (NoSuchPathException e) {
+		}
+		return files;
+	}
+
+	// Pre condition: file exists
+	Date lastModified(String server, String user, String file) {
+		try {
+			FileInfo fi = this.getAttr(server, user, file);
+			if (fi.isFile)
+				return fi.modified;
+			Date d = fi.modified;
+			String[] childs = this.dir(server, user, file);
+			for (String child : childs) {
+				Date childDate = lastModified(server, user, file + "/" + child);
+				if (childDate.compareTo(d) > 0) {
+					d = childDate;
+				}
+			}
+			return d;
+		} catch (Exception e) {
+		}
+		return null;
+	}
+}
