@@ -12,7 +12,7 @@ import java.net.UnknownHostException;
 import java.rmi.RemoteException;
 import java.util.Enumeration;
 
-import contactServer.IContactServer;
+import contact_server.IContactServer;
 import exceptions.NoPermissionsException;
 import exceptions.NoSuchServerException;
 import exceptions.ServerOfflineException;

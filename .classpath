@@ -2,5 +2,8 @@
 <classpath>
 	<classpathentry kind="src" path="src"/>
 	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
+	<classpathentry kind="lib" path="/home/guilhermemtr/Projects/DistributedFileSystem/commons-codec-1.7.jar"/>
+	<classpathentry kind="lib" path="/home/guilhermemtr/Projects/DistributedFileSystem/json-simple-1.1.1.jar"/>
+	<classpathentry kind="lib" path="/home/guilhermemtr/Projects/DistributedFileSystem/scribe-1.3.2.jar"/>
 	<classpathentry kind="output" path="bin"/>
 </classpath>
